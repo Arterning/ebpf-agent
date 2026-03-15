@@ -60,8 +60,8 @@ int trace_flow(struct sock_state_ctx *ctx)
 	struct flow_event *e = bpf_ringbuf_reserve(&flow_events, sizeof(*e), 0);
 	if (!e) return 0;
 
-	e->pid = (u32)(bpf_get_current_pid_tgid() >> 32);
-	e->uid = (u32)(bpf_get_current_uid_gid() & 0xffffffff);
+	e->pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
+	e->uid = (__u32)(bpf_get_current_uid_gid() & 0xffffffff);
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
 	__builtin_memcpy(&e->saddr, ctx->saddr, 4);
