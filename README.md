@@ -251,6 +251,120 @@ sudo journalctl -u asec-agent -f
 
 ---
 
+## 告警触发示例
+
+以下操作在 agent 运行的 Linux 主机上执行后，会在平台的 `agent_process_alert` 表中产生对应告警记录，并在资产详情「主机监控 → 告警」Tab 中展示。
+
+### 1. `suspicious_outbound_port`（高危）
+
+触发条件：任意进程连接 C2 常用端口（4444、6666、1337、31337 等）。
+
+```bash
+# 用 nc 连接 4444 端口（无需真实监听目标，TCP SYN 即可触发 eBPF 事件）
+nc -z 1.2.3.4 4444
+# 或
+curl --connect-timeout 2 http://1.2.3.4:6666 || true
+```
+
+平台收到的告警示例：
+
+```json
+{
+  "alertType": "suspicious_outbound_port",
+  "severity":  "high",
+  "comm":      "nc",
+  "dstIp":     "1.2.3.4",
+  "dstPort":   4444,
+  "detail":    "{\"dst_ip\":\"1.2.3.4\",\"dst_port\":4444,\"comm\":\"nc\",\"pid\":12345}"
+}
+```
+
+---
+
+### 2. `server_unexpected_outbound`（中危）
+
+触发条件：nginx / apache2 / mysql 等服务进程向公网 IP 发起出站 TCP 连接。
+
+```bash
+# 模拟：让 nginx worker 执行一次出站请求
+# 方法一：curl 通过 nginx 反向代理访问公网地址（nginx worker 会主动建连）
+curl http://localhost/proxy-to-external
+
+# 方法二（测试环境快捷方式）：直接以 nginx 进程名运行 curl
+sudo -u www-data curl --connect-timeout 2 http://8.8.8.8 || true
+```
+
+---
+
+### 3. `shell_from_server`（严重）
+
+触发条件：Web 服务进程（nginx、php-fpm、python、java 等）产生 bash/sh/zsh 子进程，典型场景为 RCE（远程代码执行）。
+
+```bash
+# 模拟 PHP-FPM 被 RCE 后反弹 shell
+# 以 www-data 身份 fork 出 bash（eBPF 会捕获 execve + 父进程名）
+sudo -u www-data bash -c 'echo test'
+
+# 更贴近真实场景：通过 PHP 执行 shell
+echo '<?php system($_GET["cmd"]); ?>' | sudo tee /var/www/html/test.php
+curl "http://localhost/test.php?cmd=id"
+```
+
+平台收到的告警示例：
+
+```json
+{
+  "alertType": "shell_from_server",
+  "severity":  "critical",
+  "comm":      "php-fpm",
+  "detail":    "{\"parent_comm\":\"php-fpm\",\"shell\":\"/bin/bash\",\"cmdline\":\"bash -c id\"}"
+}
+```
+
+---
+
+### 4. `exec_from_tmp`（高危）
+
+触发条件：从 `/tmp`、`/dev/shm`、`/var/tmp` 等可写目录执行任意程序，典型场景为恶意脚本落地执行。
+
+```bash
+# 将一个可执行文件复制到 /tmp 并执行
+cp /bin/ls /tmp/backdoor
+chmod +x /tmp/backdoor
+/tmp/backdoor
+
+# 或从 /dev/shm 执行
+cp /bin/id /dev/shm/implant
+/dev/shm/implant
+```
+
+平台收到的告警示例：
+
+```json
+{
+  "alertType": "exec_from_tmp",
+  "severity":  "high",
+  "comm":      "implant",
+  "detail":    "{\"filename\":\"/dev/shm/implant\",\"args\":\"\",\"pid\":23456}"
+}
+```
+
+---
+
+### 验证告警已入库
+
+```bash
+# 在 ASEC 后端数据库直接查询
+SELECT alert_type, severity, comm, dst_ip, dst_port, status, created_at
+FROM agent_process_alert
+ORDER BY created_at DESC
+LIMIT 10;
+```
+
+或在平台前端：**资产详情 → 主机监控 → 告警**（Tab 仅在资产有 agent 数据时出现）。
+
+---
+
 ## 常见问题
 
 **Q：启动报错 `failed to remove memlock rlimit`**
